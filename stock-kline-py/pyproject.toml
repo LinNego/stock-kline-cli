@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-kline-py"
+version = "1.0.0"
+description = "在终端上打印股票实时数据和K线图的命令行工具 (Python版)"
+requires-python = ">=3.10"
+license = {text = "ISC"}
+authors = [
+    {name = "user_9527"}
+]
+keywords = ["stock", "cli", "terminal", "k-line", "chart", "股票", "行情", "命令行"]
+dependencies = [
+    "httpx",
+    "rich",
+]
+
+[project.optional-dependencies]
+ai = ["openai"]
+
+[project.urls]
+homepage = "https://github.com/OnePieceJoker/stock-kline-cli"
+repository = "https://github.com/OnePieceJoker/stock-kline-cli.git"
+
+[project.scripts]
+stock-kline = "stock_kline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stock_kline*"]

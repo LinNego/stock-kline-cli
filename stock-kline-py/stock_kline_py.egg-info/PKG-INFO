@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: stock-kline-py
+Version: 1.0.0
+Summary: 在终端上打印股票实时数据和K线图的命令行工具 (Python版)
+Author: user_9527
+License: ISC
+Project-URL: homepage, https://github.com/OnePieceJoker/stock-kline-cli
+Project-URL: repository, https://github.com/OnePieceJoker/stock-kline-cli.git
+Keywords: stock,cli,terminal,k-line,chart,股票,行情,命令行
+Requires-Python: >=3.10
+Requires-Dist: httpx
+Requires-Dist: rich
+Provides-Extra: ai
+Requires-Dist: openai; extra == "ai"

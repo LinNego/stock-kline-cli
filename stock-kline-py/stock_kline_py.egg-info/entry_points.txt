@@ -1,0 +1,2 @@
+[console_scripts]
+stock-kline = stock_kline.cli:main
