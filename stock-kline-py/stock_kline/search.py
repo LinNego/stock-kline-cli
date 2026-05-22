@@ -1,7 +1,9 @@
 import asyncio
 import concurrent.futures
 import os
+import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 
@@ -9,6 +11,29 @@ SEARCH_BACKENDS = {
     "tavily": "Tavily",
     "auto": "自动(优先使用Tavily，可扩展其他后端)",
 }
+
+# 搜索来源域名分级
+PRIMARY_DOMAINS = [
+    "cninfo.com.cn",
+    "sse.com.cn",
+    "szse.cn",
+    "bse.cn",
+    "nfra.gov.cn",
+]
+
+SECONDARY_DOMAINS = [
+    "eastmoney.com",
+    "stcn.com",
+    "finance.sina.com.cn",
+    "cls.cn",
+    "wallstreetcn.com",
+    "stockstar.com",
+    "gelonghui.com",
+    "10jqka.com.cn",
+    "cczs.net.cn",
+]
+
+ALL_SEARCH_DOMAINS = PRIMARY_DOMAINS + SECONDARY_DOMAINS
 
 NOISE_KEYWORDS = [
     "API认证错误", "认证失败", "403 Forbidden", "404 Not Found",
@@ -49,6 +74,43 @@ def _clean_content(text: str) -> str:
             continue
         cleaned.append(stripped)
     return "\n".join(cleaned[:20])
+
+
+def _extract_urls(text: str) -> list[str]:
+    urls = re.findall(r'\(https?://[^)]+\)', text)
+    seen = set()
+    result = []
+    for u in urls:
+        url = u[1:-1]
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+async def _fetch_single_page(url: str, timeout: float = 5.0, proxy: str | None = None) -> str:
+    try:
+        async with _make_httpx_client(timeout, proxy=proxy) as client:
+            resp = await client.get(url, follow_redirects=True)
+        text = resp.text[:6000]
+        return _clean_content(text)[:4000]
+    except Exception:
+        return ""
+
+
+async def _enrich_with_page_content(content: str, timeout: float = 5.0, proxy: str | None = None) -> str:
+    urls = _extract_urls(content)
+    if not urls:
+        return content
+
+    tasks = [_fetch_single_page(url, timeout=timeout, proxy=proxy) for url in urls[:10]]
+    pages = await asyncio.gather(*tasks)
+
+    parts = [content]
+    for url, page_text in zip(urls[:10], pages):
+        if page_text:
+            parts.append(f"\n--- 页面原文 ({url}) ---\n{page_text}")
+    return "\n".join(parts)
 
 
 @dataclass
@@ -105,7 +167,8 @@ async def search_brave(query: str, timeout: float = 5.0, proxy: str | None = Non
     return "\n".join(lines) if lines else ""
 
 
-async def search_tavily(query: str, timeout: float = 5.0, proxy: str | None = None) -> str:
+async def search_tavily(query: str, timeout: float = 5.0, proxy: str | None = None,
+                        include_domains: list[str] | None = None) -> str:
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
         import sys
@@ -117,8 +180,10 @@ async def search_tavily(query: str, timeout: float = 5.0, proxy: str | None = No
         "api_key": api_key,
         "query": query,
         "search_depth": "basic",
-        "max_results": 5,
+        "max_results": 20,
     }
+    if include_domains:
+        payload["include_domains"] = include_domains
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=payload)
@@ -187,13 +252,39 @@ def _try_import_ddgs():
     return None
 
 
-async def search(query: str, backend: str = "jina", timeout: float = 5.0, proxy: str | None = None) -> SearchResult:
+async def _search_tavily_with_sources(
+    query: str,
+    timeout: float = 5.0,
+    proxy: str | None = None,
+    search_sources: str = "balanced",
+) -> str:
+    if search_sources == "primary":
+        content = await search_tavily(query, timeout=timeout, proxy=proxy, include_domains=PRIMARY_DOMAINS)
+        return await _enrich_with_page_content(content, timeout=timeout, proxy=proxy)
+
+    if search_sources == "all":
+        content = await search_tavily(query, timeout=timeout, proxy=proxy, include_domains=ALL_SEARCH_DOMAINS)
+        return await _enrich_with_page_content(content, timeout=timeout, proxy=proxy)
+
+    if search_sources == "balanced":
+        content = await search_tavily(query, timeout=timeout, proxy=proxy, include_domains=PRIMARY_DOMAINS)
+        if _clean_content(content):
+            return await _enrich_with_page_content(content, timeout=timeout, proxy=proxy)
+        content = await search_tavily(query, timeout=timeout, proxy=proxy, include_domains=ALL_SEARCH_DOMAINS)
+        return await _enrich_with_page_content(content, timeout=timeout, proxy=proxy)
+
+    content = await search_tavily(query, timeout=timeout, proxy=proxy)
+    return await _enrich_with_page_content(content, timeout=timeout, proxy=proxy)
+
+
+async def search(query: str, backend: str = "jina", timeout: float = 5.0,
+                 proxy: str | None = None, search_sources: str = "balanced") -> SearchResult:
     if backend == "auto":
-        return await _search_auto(query, timeout=timeout, proxy=proxy)
+        return await _search_auto(query, timeout=timeout, proxy=proxy, search_sources=search_sources)
 
     try:
         if backend == "tavily":
-            content = await search_tavily(query, timeout=timeout, proxy=proxy)
+            content = await _search_tavily_with_sources(query, timeout=timeout, proxy=proxy, search_sources=search_sources)
         else:
             content = ""
     except Exception:
@@ -202,10 +293,11 @@ async def search(query: str, backend: str = "jina", timeout: float = 5.0, proxy:
     return SearchResult(query=query, content=content, source=backend)
 
 
-async def _search_auto(query: str, timeout: float = 5.0, proxy: str | None = None) -> SearchResult:
+async def _search_auto(query: str, timeout: float = 5.0, proxy: str | None = None,
+                       search_sources: str = "balanced") -> SearchResult:
     async def try_tavily():
         try:
-            return "tavily", await search_tavily(query, timeout=timeout, proxy=proxy)
+            return "tavily", await _search_tavily_with_sources(query, timeout=timeout, proxy=proxy, search_sources=search_sources)
         except Exception:
             return "tavily", ""
 
@@ -229,12 +321,13 @@ async def search_stock(
     timeout: float = 5.0,
     proxy: str | None = None,
     mode: str = "parallel",
+    search_sources: str = "balanced",
 ) -> list[SearchResult]:
     if mode == "single":
         combined = f"{name} {code} 最新公告 财报 业绩 营收 净利润 立案 处罚 监管 研报 评级"
         if industry:
             combined += f" {industry} 政策 2026"
-        result = await search(combined, backend=backend, timeout=timeout, proxy=proxy)
+        result = await search(combined, backend=backend, timeout=timeout, proxy=proxy, search_sources=search_sources)
         return [result]
 
     queries = [
@@ -246,6 +339,6 @@ async def search_stock(
     if industry:
         queries.append(f"{industry} 政策 2026")
 
-    tasks = [search(q, backend=backend, timeout=timeout, proxy=proxy) for q in queries]
+    tasks = [search(q, backend=backend, timeout=timeout, proxy=proxy, search_sources=search_sources) for q in queries]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return [r for r in results if isinstance(r, SearchResult)]

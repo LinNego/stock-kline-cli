@@ -2,6 +2,8 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
+from io import StringIO
 
 from rich.console import Console
 from rich import box
@@ -43,6 +45,12 @@ def build_analyze_parser() -> argparse.ArgumentParser:
         help="搜索模式: parallel(并行5次,费credit) / single(合并1次,省credit)",
         choices=["parallel", "single"],
         default="parallel",
+    )
+    p.add_argument(
+        "--search-sources",
+        help="搜索来源范围: balanced(优先官方来源，不足时自动扩大) / primary(仅官方来源) / all(官方+权威媒体)",
+        choices=["balanced", "primary", "all"],
+        default="balanced",
     )
     p.add_argument(
         "--no-search",
@@ -245,6 +253,46 @@ async def process_stocks(args: argparse.Namespace, stocks: list[str]) -> None:
                     export_kline_data(kline_data, args.export, args.export_file)
 
 
+def _render_watch_display(target_console: Console, stocks: list,
+                          prev_prices: dict[str, float] | None = None,
+                          interval: int = 30, theme=None) -> None:
+    if theme is None:
+        theme = THEMES["subtle"]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target_console.print(f"[bold]实时行情 ({now})[/bold]")
+
+    table = Table(
+        "名称", "代码", "最新价", "涨跌幅", "昨收", f"变幅({interval}s)",
+        box=box.SIMPLE, show_header=True,
+    )
+    for s in stocks:
+        name = f"{s.name}({s.market})"
+
+        change = f"{s.change_pct:+.2f}%"
+        if s.change_pct > 0:
+            change = f"[{theme.up_rich}]{change}[/{theme.up_rich}]"
+        elif s.change_pct < 0:
+            change = f"[{theme.down_rich}]{change}[/{theme.down_rich}]"
+
+        prev = prev_prices.get(s.code) if prev_prices else None
+        if prev is not None and prev != 0:
+            fetch_change = (s.price - prev) / prev * 100
+            if fetch_change > 0:
+                arrows = "↑" if fetch_change < 3 else "↑↑"
+                delta_str = f"[{theme.up_rich}]{arrows} {fetch_change:+.2f}%[/{theme.up_rich}]"
+            elif fetch_change < 0:
+                arrows = "↓" if abs(fetch_change) < 3 else "↓↓"
+                delta_str = f"[{theme.down_rich}]{arrows} {fetch_change:+.2f}%[/{theme.down_rich}]"
+            else:
+                delta_str = "→  0.00%"
+        else:
+            delta_str = "--"
+
+        table.add_row(name, s.code, f"{s.price:.2f}", change, f"{s.prev_close:.2f}", delta_str)
+
+    target_console.print(table)
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "analyze":
         parser = build_analyze_parser()
@@ -277,12 +325,45 @@ def main() -> None:
 
     async def run():
         if args.watch:
-            import time
-            while True:
-                console.clear()
-                await process_stocks(args, stocks)
-                console.print(f"\n[dim]下次刷新在 {args.watch} 秒后... (Ctrl+C退出)[/dim]")
-                time.sleep(args.watch)
+            interval = args.watch
+            theme = THEMES.get(args.color_theme, THEMES["subtle"])
+            prev_prices: dict[str, float] = {}
+            prev_lines = 0
+            first = True
+
+            console.print(f"[cyan]监控模式 - 每 {interval}秒刷新 (Ctrl+C退出)[/cyan]\n")
+
+            try:
+                while True:
+                    all_stocks = await fetch_realtime(stocks)
+                    if not all_stocks:
+                        console.print("[red]无数据[/red]")
+                        return
+
+                    buf = StringIO()
+                    c = Console(file=buf, force_terminal=True, width=console.width)
+                    _render_watch_display(c, all_stocks, prev_prices, interval, theme)
+                    output = buf.getvalue()
+
+                    for s in all_stocks:
+                        prev_prices[s.code] = s.price
+
+                    current_lines = output.rstrip('\n').count('\n') + 1
+
+                    if first:
+                        sys.stdout.write(output)
+                        sys.stdout.flush()
+                        prev_lines = current_lines
+                        first = False
+                    else:
+                        sys.stdout.write(f'\033[{prev_lines}A\033[J{output}')
+                        sys.stdout.flush()
+                        prev_lines = current_lines
+
+                    await asyncio.sleep(interval)
+            except KeyboardInterrupt:
+                print()
+                console.print("[yellow]监控已停止[/yellow]")
         else:
             await process_stocks(args, stocks)
 
