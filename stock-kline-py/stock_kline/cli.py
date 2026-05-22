@@ -293,12 +293,57 @@ def _render_watch_display(target_console: Console, stocks: list,
     target_console.print(table)
 
 
+def build_chart_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="stock-kline chart",
+        description="实时K线构建（对齐自然时间，每N分钟生成一根K线）",
+    )
+    p.add_argument("stock_code", help="代码, 如 nf_RB / nf_V / sh600000")
+    p.add_argument(
+        "-i", "--interval",
+        help="K线周期（分钟），默认5",
+        type=int,
+        default=5,
+    )
+    p.add_argument(
+        "--bars",
+        help="显示的K线根数，默认40",
+        type=int,
+        default=40,
+    )
+    p.add_argument(
+        "--height",
+        help="图表高度，默认12",
+        type=int,
+        default=12,
+    )
+    p.add_argument(
+        "--proxy",
+        help="HTTP代理地址",
+        type=str,
+    )
+    return p
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "analyze":
         parser = build_analyze_parser()
         args = parser.parse_args(sys.argv[2:])
         from .ai_report import run_analyze
         asyncio.run(run_analyze(args))
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "chart":
+        parser = build_chart_parser()
+        args = parser.parse_args(sys.argv[2:])
+        from .realtime_kline import run_realtime_kline
+        asyncio.run(run_realtime_kline(
+            args.stock_code,
+            interval=args.interval,
+            max_bars=args.bars,
+            chart_height=args.height,
+            proxy=args.proxy,
+        ))
         return
 
     parser = build_parser()
