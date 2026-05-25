@@ -15,6 +15,7 @@ keywords = ["stock", "cli", "terminal", "k-line", "chart", "股票", "行情", "
 dependencies = [
     "httpx",
     "rich",
+    "akshare",
 ]
 
 [project.optional-dependencies]

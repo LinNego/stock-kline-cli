@@ -11,7 +11,9 @@ stock_kline/cli.py
 stock_kline/display.py
 stock_kline/fetcher.py
 stock_kline/models.py
+stock_kline/realtime_kline.py
 stock_kline/search.py
+stock_kline/strategies.py
 stock_kline/theme.py
 stock_kline_py.egg-info/PKG-INFO
 stock_kline_py.egg-info/SOURCES.txt

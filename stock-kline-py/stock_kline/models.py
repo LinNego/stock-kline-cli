@@ -20,6 +20,7 @@ class StockRealtime:
     prev_close: float
     market: str
     currency: str
+    volume: float = 0.0
 
 
 @dataclass

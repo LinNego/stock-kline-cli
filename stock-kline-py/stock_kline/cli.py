@@ -127,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="持续监控模式，每隔N秒刷新 (默认禁用)",
         type=int,
     )
+    parser.add_argument(
+        "--stealth",
+        help="摸鱼模式: 只显示价格，隐藏名称/涨跌/代码",
+        action="store_true",
+    )
     return parser
 
 
@@ -203,7 +208,7 @@ async def process_stocks(args: argparse.Namespace, stocks: list[str]) -> None:
                         f"\n[yellow]{stock.name}({stock.code}) {ktype_name}K线图 ({len(kline_data)}个周期):[/yellow]"
                     )
                     console.print(
-                        f"[yellow]价格走势 ({theme.close_label}:收盘价 {theme.high_label}:最高价 {theme.low_label}:最低价)[/yellow]"
+                        f"[yellow]┃=实体(涨跌) │=影线(最高最低)[/yellow]"
                     )
                     console.print(chart)
 
@@ -255,10 +260,19 @@ async def process_stocks(args: argparse.Namespace, stocks: list[str]) -> None:
 
 def _render_watch_display(target_console: Console, stocks: list,
                           prev_prices: dict[str, float] | None = None,
-                          interval: int = 30, theme=None) -> None:
+                          interval: int = 30, theme=None,
+                          stealth: bool = False) -> int:
     if theme is None:
         theme = THEMES["subtle"]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if stealth:
+        line_count = 0
+        for s in stocks:
+            target_console.print(f"[bold]{s.price:.0f}[/bold]")
+            line_count += 1
+        return line_count
+
     target_console.print(f"[bold]实时行情 ({now})[/bold]")
 
     table = Table(
@@ -291,14 +305,15 @@ def _render_watch_display(target_console: Console, stocks: list,
         table.add_row(name, s.code, f"{s.price:.2f}", change, f"{s.prev_close:.2f}", delta_str)
 
     target_console.print(table)
+    return 0
 
 
 def build_chart_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stock-kline chart",
-        description="实时K线构建（对齐自然时间，每N分钟生成一根K线）",
+        description="实时K线构建 / 回测信号",
     )
-    p.add_argument("stock_code", help="代码, 如 nf_RB / nf_V / sh600000")
+    p.add_argument("stock_code", help="代码, 如 nf_TA / nf_TA,nf_V (多品种逗号分隔)")
     p.add_argument(
         "-i", "--interval",
         help="K线周期（分钟），默认5",
@@ -322,6 +337,34 @@ def build_chart_parser() -> argparse.ArgumentParser:
         help="HTTP代理地址",
         type=str,
     )
+    p.add_argument(
+        "--signal",
+        help="开启放量突破信号提示",
+        action="store_true",
+    )
+    p.add_argument(
+        "--stealth",
+        help="摸鱼模式: 只显示K线图和量图",
+        action="store_true",
+    )
+    p.add_argument(
+        "--replay",
+        help="回测模式: 用历史K线重放检测信号，参数为速度(秒/bar, 默认0.3)",
+        nargs="?",
+        const=0.3,
+        type=float,
+    )
+    p.add_argument(
+        "--strategy",
+        help="信号策略: breakout / ma_cross / vol_spike (默认 breakout)",
+        choices=["breakout", "ma_cross", "vol_spike"],
+        default="breakout",
+    )
+    p.add_argument(
+        "--strategy-file",
+        help="自定义策略文件路径 (需实现 Strategy 接口)",
+        type=str,
+    )
     return p
 
 
@@ -336,14 +379,45 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "chart":
         parser = build_chart_parser()
         args = parser.parse_args(sys.argv[2:])
-        from .realtime_kline import run_realtime_kline
-        asyncio.run(run_realtime_kline(
-            args.stock_code,
-            interval=args.interval,
-            max_bars=args.bars,
-            chart_height=args.height,
-            proxy=args.proxy,
-        ))
+        codes = [s.strip() for s in args.stock_code.split(",")]
+
+        from .realtime_kline import run_realtime_kline, run_replay
+        from .strategies import get_strategy, load_strategy_from_file
+
+        strategy = None
+        if args.signal:
+            if args.strategy_file:
+                strategy = load_strategy_from_file(args.strategy_file)
+                if strategy is None:
+                    print(f"无法加载策略文件: {args.strategy_file}")
+            else:
+                strategy = get_strategy(args.strategy)
+            if strategy is None and not args.strategy_file:
+                print(f"未知策略: {args.strategy}")
+                return
+
+        if args.replay is not None:
+            asyncio.run(run_replay(
+                codes,
+                interval=args.interval,
+                max_bars=args.bars,
+                chart_height=args.height,
+                speed=args.replay,
+                enable_signal=args.signal,
+                stealth=args.stealth,
+                strategy=strategy,
+            ))
+        else:
+            asyncio.run(run_realtime_kline(
+                codes[0],
+                interval=args.interval,
+                max_bars=args.bars,
+                chart_height=args.height,
+                proxy=args.proxy,
+                enable_signal=args.signal,
+                stealth=args.stealth,
+                strategy=strategy,
+            ))
         return
 
     parser = build_parser()
@@ -372,6 +446,7 @@ def main() -> None:
         if args.watch:
             interval = args.watch
             theme = THEMES.get(args.color_theme, THEMES["subtle"])
+            stealth = getattr(args, "stealth", False)
             prev_prices: dict[str, float] = {}
             prev_lines = 0
             first = True
@@ -382,18 +457,26 @@ def main() -> None:
                 while True:
                     all_stocks = await fetch_realtime(stocks)
                     if not all_stocks:
-                        console.print("[red]无数据[/red]")
-                        return
+                        if not stealth:
+                            sys.stdout.write("\r[dim]无网络, 重试中...[/dim]")
+                            sys.stdout.flush()
+                        await asyncio.sleep(interval)
+                        continue
 
                     buf = StringIO()
                     c = Console(file=buf, force_terminal=True, width=console.width)
-                    _render_watch_display(c, all_stocks, prev_prices, interval, theme)
+                    stealth_lines = _render_watch_display(
+                        c, all_stocks, prev_prices, interval, theme, stealth=stealth,
+                    )
                     output = buf.getvalue()
 
                     for s in all_stocks:
                         prev_prices[s.code] = s.price
 
-                    current_lines = output.rstrip('\n').count('\n') + 1
+                    if stealth:
+                        current_lines = stealth_lines
+                    else:
+                        current_lines = output.rstrip('\n').count('\n') + 1
 
                     if first:
                         sys.stdout.write(output)

@@ -1,5 +1,6 @@
 httpx
 rich
+akshare
 
 [ai]
 openai

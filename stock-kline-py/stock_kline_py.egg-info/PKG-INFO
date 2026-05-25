@@ -10,5 +10,6 @@ Keywords: stock,cli,terminal,k-line,chart,股票,行情,命令行
 Requires-Python: >=3.10
 Requires-Dist: httpx
 Requires-Dist: rich
+Requires-Dist: akshare
 Provides-Extra: ai
 Requires-Dist: openai; extra == "ai"
