@@ -1,167 +1,168 @@
 # stock-kline-py
 
-在终端上打印股票实时数据和K线图的命令行工具（Python版）。支持 A股、港股、美股。
-
-基于 [stock-kline-cli](https://github.com/OnePieceJoker/stock-kline-cli) 的 Python 重构版，新增更多功能。
+在终端上打印股票和期货实时数据、K线图、信号回测的命令行工具（Python版）。
 
 ## 安装
 
 ```bash
-# 方式一：从本地源码安装（开发/修改代码时推荐）
 cd stock-kline-py
 pip install -e .
-
-# 方式二：基础安装（实时行情 + K线图）
-pip install httpx rich
-
-# 如需 AI 深度分析功能
-pip install openai
-
-# 如果遇到外部包管理限制，加上 --break-system-packages
 pip install --break-system-packages -e .
-pip install --break-system-packages openai
 ```
 
-`pip install -e .` 会创建 `stock-kline` 命令（指向 `stock_kline.cli:main`），
-且安装的是可编辑模式，修改源码后即时生效，无需重新安装。
+如需 AI 分析：`pip install openai`
 
-## 使用
-
-### 实时行情
+## 实时行情
 
 ```bash
-# 查看单个股票
+# A股
 stock-kline -s sh600000
 
-# 查看多个股票
-stock-kline -s sh600000,sz000001
+# 期货
+stock-kline -s nf_V            # PVC
+stock-kline -s nf_TA           # PTA
+stock-kline -s nf_RB           # 螺纹钢
+stock-kline -s nf_CU           # 沪铜
 
-# 美股/港股
-stock-kline -s usAAPL
-stock-kline -s hk00700
+# 多个
+stock-kline -s sh600000,nf_V,nf_RB
+
+# 数据来源：AKShare(期货) / 腾讯API(股票)
 ```
 
-### K线图
+## K线图（日/周）
 
 ```bash
-# 显示日K线图
-stock-kline -s sh600000 --day
-
-# 显示周K线图
-stock-kline -s sh600000 --week
-
-# 同时显示日K和周K
-stock-kline -s sh600000 --day --week
-
-# 设置周期数（默认40）
-stock-kline -s sh600000 --day -p 60
-
-# 设置图表高度（默认15）
-stock-kline -s sh600000 --day --height 20
+stock-kline -s nf_V --day           # 日K
+stock-kline -s nf_V --week          # 周K
+stock-kline -s nf_V --day -p 60     # 60个周期
+stock-kline -s sh600000 --day       # 股票日K
 ```
 
-### 图表样式
+## 5分钟K线（实时更新）
+
+每5分钟边界自动从AKShare拉取已完成K线，无需轮询：
 
 ```bash
-# ASCII 纯字符图表（默认）
-stock-kline -s sh600000 --day --chart-type ascii
-
-# Rich 彩色图表
-stock-kline -s sh600000 --day --chart-type rich
-
-# 颜色主题：subtle(蓝灰) / vibrant(红绿)
-stock-kline -s sh600000 --day --color-theme vibrant
-stock-kline -s sh600000 --day --color-theme subtle
+stock-kline chart nf_V -i 5                      # 完整模式（蓝色K线）
+stock-kline chart nf_V -i 5 --stealth            # 摸鱼模式（灰白K线，只显示图）
+stock-kline chart nf_V -i 5 --stealth --height 3 # 3行高的迷你K线
+stock-kline chart nf_V -i 5 --signal             # 信号提示
+stock-kline chart nf_V -i 5 --disguise            # 伪装终端标题
+stock-kline chart nf_V -i 5 --stealth --disguise --height 3  # 终极摸鱼
+stock-kline chart nf_V -i 5 --bars 60            # 显示60根
 ```
 
-### AI 深度分析（LLM + 联网搜索）
+## 摸鱼/伪装
 
 ```bash
-# 1. 设置 API Key
+# 纯数字（最隐蔽）
+stock-kline -w 3 -s nf_V --stealth
+
+# 灰白K线 + 区间最高/最低/当前收盘
+stock-kline chart nf_V -i 5 --stealth --height 3
+
+# 加上伪装标题
+stock-kline chart nf_V -i 5 --stealth --disguise --height 3
+```
+
+摸鱼 `--stealth` 模式下，左侧显示三个价格：
+- **H** — 区间最高
+- **数字** — 当前收盘（颜色跟随涨跌）
+- **L** — 区间最低
+
+## 信号策略
+
+内置策略，`--signal` 时生效：
+
+| 策略 | 参数 | 说明 |
+|------|------|------|
+| `breakout` | `--strategy breakout` | 平台盘整后放量突破（默认） |
+| `ma_cross` | `--strategy ma_cross` | MA5/MA10金叉死叉 |
+| `vol_spike` | `--strategy vol_spike` | 单根放量 |
+
+```bash
+stock-kline chart nf_TA -i 5 --signal --strategy ma_cross
+```
+
+## 回测模式
+
+用历史K线逐bar推进检测信号，信号触发时暂停展示K线+量图：
+
+```bash
+# 单品种
+stock-kline chart nf_TA -i 5 --bars 30 --replay --signal
+
+# 多品种
+stock-kline chart nf_TA,nf_V,nf_RB -i 5 --bars 20 --replay --signal
+
+# 指定策略
+stock-kline chart nf_TA -i 5 --replay --signal --strategy ma_cross
+
+# 回放速度（秒/bar）
+stock-kline chart nf_TA -i 5 --replay 0.1 --signal
+
+# 自定义策略文件
+stock-kline chart nf_TA -i 5 --replay --signal --strategy-file ./my_strat.py
+```
+
+自定义策略示例：
+
+```python
+from stock_kline.futures.strategies import Strategy
+
+class MyStrategy(Strategy):
+    name = "my_strat"
+    description = "..."
+    def check(self, bars):
+        # bars: list[KLine]
+        # 返回 {"strategy":self.name, "direction":"up"/"down", ...} 或 None
+        ...
+```
+
+## 监控模式
+
+```bash
+stock-kline -w 3 -s nf_V            # 每3秒刷新
+stock-kline -w 30 -s sh600000,nf_V  # 每30秒刷新
+stock-kline -w 3 -s nf_V --stealth  # 摸鱼模式
+```
+
+## AI深度分析
+
+```bash
 export STOCK_KLINE_API_KEY="sk-xxx"
-export TAVILY_API_KEY="tvly-xxx"       # Tavily 搜索（推荐，免费 1000次/月）
-
-# 2. 分析个股（默认 auto 模式）
 stock-kline analyze sh600000
-
-# 3. 使用自定义 prompt 文件
-stock-kline analyze sh600000 --prompt ./prompt
-
-# 4. 指定搜索后端
-stock-kline analyze sh600000 --search-backend auto    # 自动（默认）
-stock-kline analyze sh600000 --search-backend tavily  # Tavily（需 TAVILY_API_KEY）
-
-# 5. 搜索模式
-stock-kline analyze sh600000 --search-mode parallel  # 并行5次搜索，覆盖最全（费credit，默认）
-stock-kline analyze sh600000 --search-mode single    # 合并1次搜索，省credit
-
-# 6. 使用代理（WSL 访问宿主机代理）
-stock-kline analyze sh600000 --proxy http://172.24.160.1:7897
-
-# 7. 跳过搜索，仅用基础数据
 stock-kline analyze sh600000 --no-search
-
-# 8. 指定 LLM 模型（兼容任意 OpenAI API）
-stock-kline analyze sh600000 \
-  --ai-model deepseek-v4-flash \
-  --ai-base-url https://opencode.ai/zen/go/v1
-
-# 9. 全部参数示例
-stock-kline analyze sh600000 \
-  --prompt ./my_prompt.txt \
-  --search-backend tavily \
-  --search-mode single \
-  --proxy http://172.24.160.1:7897 \
-  --ai-model deepseek-v4-flash \
-  --ai-base-url https://opencode.ai/zen/go/v1
+stock-kline analyze sh600000 --proxy http://127.0.0.1:7897
 ```
 
-AI 分析调用 LLM 后流式输出完整的跟踪分析报告，包含：
-- 核心驱动逻辑（逻辑持续性评分）
-- 财务基本面与机构预期
-- 历史利空风险排查
-- 技术面与资金面
-- 概念题材与未来催化剂
-
-AI 分析是独立子命令，不会与 `--watch` 模式冲突。
-
-### 数据导出
+## 数据导出
 
 ```bash
-stock-kline -s sh600000 --day --export json
-stock-kline -s sh600000 --day --export csv --export-file ./sh600000_kline.csv
+stock-kline -s nf_V --day --export json
+stock-kline -s nf_V --day --export csv --export-file ./kline.csv
 ```
 
-### 本地规则分析（无需 API）
+## 项目结构
 
-```bash
-stock-kline -s sh600000 --day --ai
 ```
-
-内置锤子线/启明星形态识别 + MA5/MA10 趋势分析。
-
-### 配置文件
-
-```bash
-# config.json
-# { "stocks": ["sh600000", "sz000001"] }
-
-stock-kline -c config.json --day
+stock_kline/
+  ├── cli.py               # CLI入口
+  ├── common/               # 公共组件
+  │   ├── models.py         # 数据模型
+  │   ├── chart_ascii.py    # ASCII K线绘制
+  │   ├── chart_rich.py     # Rich彩色图表
+  │   ├── display.py        # 表格显示
+  │   └── analysis.py       # 形态识别
+  ├── stock/                # 股票
+  │   └── fetcher.py        # 腾讯API
+  ├── futures/              # 期货
+  │   ├── fetcher.py        # AKShare数据源
+  │   ├── chart.py          # 实时K线+回测
+  │   └── strategies.py     # 信号策略框架
+  └── ai/                   # AI分析
 ```
-
-## 数据来源
-
-- 实时数据：腾讯股票 API（qt.gtimg.cn）
-- K线数据：腾讯股票 API（web.ifzq.gtimg.cn）
-- AI 搜索：Tavily
-
-## 依赖
-
-| 组件 | 用途 |
-|------|------|
-| httpx | HTTP 请求 |
-| rich | 彩色图表 + 表格 |
-| openai | LLM API 调用（可选） |
 
 ## License
 

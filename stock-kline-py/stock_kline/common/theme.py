@@ -43,4 +43,17 @@ THEMES: dict[str, ColorTheme] = {
         high_label="绿色",
         low_label="红色",
     ),
+    "stealth": ColorTheme(
+        name="stealth",
+        up_ansi="37",
+        down_ansi="90",
+        close_ansi="37",
+        high_ansi="37",
+        low_ansi="90",
+        up_rich="white",
+        down_rich="grey",
+        close_label="白色",
+        high_label="白色",
+        low_label="灰色",
+    ),
 }

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from importlib import util as _importlib_util
 from typing import Any
 
-from .models import KLine
+from ..common.models import KLine
 
 
 class Strategy(ABC):

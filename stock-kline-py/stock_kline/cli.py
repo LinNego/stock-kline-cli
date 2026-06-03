@@ -10,13 +10,14 @@ from rich import box
 from rich.table import Table
 from rich.panel import Panel
 
-from .analysis import analyze_kline_pattern, analyze_trend
-from .chart_ascii import plot_kline as plot_ascii_kline, render_volume as render_ascii_volume
-from .chart_rich import build_kline_panel, build_stat_table, build_volume_panel
-from .display import print_realtime_table
-from .fetcher import fetch_realtime, fetch_kline, get_market_info
-from .theme import THEMES
-from .search import SEARCH_BACKENDS
+from .common.analysis import analyze_kline_pattern, analyze_trend
+from .common.chart_ascii import plot_kline as plot_ascii_kline, render_volume as render_ascii_volume
+from .common.chart_rich import build_kline_panel, build_stat_table, build_volume_panel
+from .common.display import print_realtime_table
+from .common.fetcher import fetch_realtime, fetch_kline
+from .stock.fetcher import get_market_info
+from .common.theme import THEMES
+from .ai.search import SEARCH_BACKENDS
 
 console = Console()
 
@@ -365,6 +366,11 @@ def build_chart_parser() -> argparse.ArgumentParser:
         help="自定义策略文件路径 (需实现 Strategy 接口)",
         type=str,
     )
+    p.add_argument(
+        "--disguise",
+        help="伪装模式: 终端标题伪装成系统进程名",
+        action="store_true",
+    )
     return p
 
 
@@ -372,7 +378,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "analyze":
         parser = build_analyze_parser()
         args = parser.parse_args(sys.argv[2:])
-        from .ai_report import run_analyze
+        from .ai.report import run_analyze
         asyncio.run(run_analyze(args))
         return
 
@@ -381,8 +387,8 @@ def main() -> None:
         args = parser.parse_args(sys.argv[2:])
         codes = [s.strip() for s in args.stock_code.split(",")]
 
-        from .realtime_kline import run_realtime_kline, run_replay
-        from .strategies import get_strategy, load_strategy_from_file
+        from .futures.chart import run_realtime_kline, run_replay
+        from .futures.strategies import get_strategy, load_strategy_from_file
 
         strategy = None
         if args.signal:
@@ -406,6 +412,7 @@ def main() -> None:
                 enable_signal=args.signal,
                 stealth=args.stealth,
                 strategy=strategy,
+                disguise=args.disguise,
             ))
         else:
             asyncio.run(run_realtime_kline(
@@ -417,6 +424,7 @@ def main() -> None:
                 enable_signal=args.signal,
                 stealth=args.stealth,
                 strategy=strategy,
+                disguise=args.disguise,
             ))
         return
 

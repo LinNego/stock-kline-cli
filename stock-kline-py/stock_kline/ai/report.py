@@ -7,8 +7,8 @@ from urllib.parse import urlparse
 
 from openai import AsyncOpenAI, APIError
 
-from .ai_prompt import DEFAULT_PROMPT
-from .fetcher import get_market_info, fetch_realtime, fetch_kline
+from .prompt import DEFAULT_PROMPT
+from ..fetcher import get_market_info, fetch_realtime, fetch_kline
 from .search import search_stock, SEARCH_BACKENDS, PRIMARY_DOMAINS, SECONDARY_DOMAINS, _extract_urls
 
 SOURCE_PRIORITY_MAP = {}

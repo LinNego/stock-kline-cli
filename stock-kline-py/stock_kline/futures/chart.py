@@ -5,13 +5,41 @@ from io import StringIO
 
 from rich.console import Console as RichConsole
 
+from ..common.models import KLine
+from ..common.chart_ascii import plot_kline, render_volume
+from ..common.theme import THEMES
 from .fetcher import FUTURES_SYMBOL_MAP, NF_TO_AKSHARE
-from .models import KLine
-from .chart_ascii import plot_kline, render_volume
-from .theme import THEMES
 from .strategies import Strategy, get_strategy, BreakoutStrategy
 
 BELL = "\a"
+
+DISGUISE_TITLES = [
+    "gcc -O2 -c main.c",
+    "cc1plus -quiet -O2 main.cpp -o main.o",
+    "python3 setup.py build_ext --inplace",
+    "make -j4 all",
+    "npm install --save-dev typescript",
+    "apt-get install -y libssl-dev",
+    "systemd-journald[548]: 5 entries suppressed",
+    "journalctl -u sshd -n 50",
+    "git fetch origin --prune",
+    "git rebase -i HEAD~3",
+    "python3 -m pip install --user pytest",
+    "cargo build --release",
+    "docker-compose up -d postgres",
+    "sshd[1624]: Accepted publickey for root",
+    "systemd[1]: Starting Network Manager...",
+]
+
+
+def _set_title(title: str) -> None:
+    sys.stdout.write(f"\033]0;{title}\007")
+    sys.stdout.flush()
+
+
+def _cycle_title(tick: int) -> None:
+    title = DISGUISE_TITLES[tick % len(DISGUISE_TITLES)]
+    _set_title(title)
 
 
 def _next_boundary(dt: datetime, interval: int) -> datetime:
@@ -45,19 +73,50 @@ def _load_historical_bars(code: str, interval: int, max_bars: int) -> list[KLine
     for _, row in df.iterrows():
         dt = str(row['datetime'])
         time_str = dt[-8:-3] if len(dt) >= 16 else dt[-5:]
-        vol = float(row['volume'])
-        if vol == 0:
-            continue
         bars.append(KLine(
             date=time_str,
             open=float(row['open']),
             close=float(row['close']),
             high=float(row['high']),
             low=float(row['low']),
-            volume=vol,
+            volume=float(row['volume']),
         ))
 
-    return bars[-max_bars:] if len(bars) > max_bars else bars
+    if not bars:
+        return []
+    now = datetime.now()
+    last_bar_time = bars[-1].date
+    try:
+        parts = last_bar_time.split(":")
+        last_h, last_m = int(parts[0]), int(parts[1])
+        now_h, now_m = now.hour, now.minute
+        last_total = last_h * 60 + last_m
+        now_total = now_h * 60 + now_m
+        if last_total > now_total:
+            last_total -= 1440
+        if now_total - last_total > interval * 3:
+            return []
+    except (ValueError, IndexError):
+        pass
+
+    seg = [bars[-1]]
+    for b in reversed(bars[:-1]):
+        gap = _bar_time_diff(b, seg[0])
+        if gap > interval * 30:
+            break
+        seg.insert(0, b)
+
+    return seg[-max_bars:] if len(seg) > max_bars else seg
+
+
+def _bar_time_diff(a: KLine, b: KLine) -> int:
+    def _to_min(t: str) -> int:
+        parts = t.split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    diff = _to_min(b.date) - _to_min(a.date)
+    if diff < 0:
+        diff += 1440
+    return diff
 
 
 def _get_last_bar_time(bars: list[KLine]) -> datetime | None:
@@ -90,11 +149,48 @@ def _render_display(
 
     if stealth:
         if bars:
+            all_prices = [p for b in bars for p in (b.high, b.low, b.open, b.close)]
+            vmin = min(all_prices)
+            vmax = max(all_prices)
+            span = vmax - vmin or 1
+            close = bars[-1].close
+            close_is_up = bars[-1].close >= bars[-1].open
+            high_ansi = f"\033[{theme.up_ansi}m"
+            low_ansi = f"\033[{theme.down_ansi}m"
+            close_ansi = f"\033[{theme.up_ansi if close_is_up else theme.down_ansi}m"
+            reset = "\033[0m"
+
+            def _row_of(p):
+                return int((p - vmin) / span * (chart_height - 1))
+
+            row_h = _row_of(vmax)
+            row_l = _row_of(vmin)
+            row_c = _row_of(close)
+
+            labels: dict[int, tuple[str, str]] = {}
+            if row_c >= 0:
+                labels[row_c] = (close_ansi, f"{close:>7.2f}")
+            if row_h >= 0 and row_h not in labels:
+                labels[row_h] = (high_ansi, f"H {vmax:>5.0f}")
+            if row_l >= 0 and row_l not in labels:
+                labels[row_l] = (low_ansi, f"L {vmin:>5.0f}")
+
             chart = plot_kline(bars, height=chart_height, theme=theme)
-            buf.write(chart + "\n")
+            chart_lines = chart.split("\n")
+
+            for i, line in enumerate(chart_lines):
+                i_rev = chart_height - 1 - i
+                lbl = labels.get(i_rev)
+                if lbl:
+                    ansi, text = lbl
+                    buf.write(f"{ansi}{text}{reset}   ")
+                else:
+                    buf.write(" " * 10)
+                buf.write(line + "\n")
+
             vol = render_volume(bars, width=40, theme=theme, compact=True)
             if vol:
-                buf.write(vol + "\n")
+                buf.write(" " * 10 + vol + "\n")
         if next_boundary_time:
             remaining = (next_boundary_time - datetime.now()).total_seconds()
             if remaining > 0:
@@ -151,13 +247,20 @@ async def run_realtime_kline(
     enable_signal: bool = False,
     stealth: bool = False,
     strategy: Strategy | None = None,
+    disguise: bool = False,
 ) -> None:
     from rich.console import Console
     console = Console()
-    theme = THEMES["subtle"]
+    theme = THEMES["stealth" if stealth else "subtle"]
     signal: dict | None = None
 
     bars = _load_historical_bars(code, interval, max_bars)
+    if not bars:
+        if not stealth:
+            console.print("[yellow]当前非交易时段[/yellow]")
+        while not bars:
+            await asyncio.sleep(30)
+            bars = _load_historical_bars(code, interval, max_bars)
     if bars and not stealth:
         console.print(f"[dim]已加载 {len(bars)} 根历史K线[/dim]")
 
@@ -169,20 +272,28 @@ async def run_realtime_kline(
 
     output = _render_display(
         bars, code, aks_name, interval,
-        chart_height, theme, next_boundary, signal, stealth=stealth,
+        chart_height, theme, next_boundary, signal,
+        stealth=stealth,
     )
     sys.stdout.write(output)
     sys.stdout.flush()
     prev_lines = output.rstrip("\n").count("\n") + 1
+    disguise_tick = 0
+    if disguise:
+        _set_title(DISGUISE_TITLES[0])
 
     try:
         while True:
             remaining = (next_boundary - datetime.now()).total_seconds()
             if remaining > 3:
                 await asyncio.sleep(3)
+                if disguise:
+                    disguise_tick += 1
+                    _cycle_title(disguise_tick)
                 output = _render_display(
                     bars, code, aks_name, interval,
-                    chart_height, theme, next_boundary, signal, stealth=stealth,
+                    chart_height, theme, next_boundary, signal,
+                    stealth=stealth,
                 )
                 lines = output.rstrip("\n").count("\n") + 1
                 sys.stdout.write(f"\033[{prev_lines}A\033[J{output}")
@@ -207,7 +318,8 @@ async def run_realtime_kline(
 
             output = _render_display(
                 bars, code, aks_name, interval,
-                chart_height, theme, next_boundary, signal, stealth=stealth,
+                chart_height, theme, next_boundary, signal,
+                stealth=stealth,
             )
             lines = output.rstrip("\n").count("\n") + 1
             sys.stdout.write(f"\033[{prev_lines}A\033[J{output}")
@@ -229,10 +341,11 @@ async def run_replay(
     enable_signal: bool = True,
     stealth: bool = False,
     strategy: Strategy | None = None,
+    disguise: bool = False,
 ) -> None:
     from rich.console import Console
     console = Console()
-    theme = THEMES["subtle"]
+    theme = THEMES["stealth" if stealth else "subtle"]
 
     all_hist = {}
     for code in codes:
@@ -248,12 +361,19 @@ async def run_replay(
     signal_log: list[tuple[str, dict]] = []
     first = True
     prev_lines = 0
+    disguise_tick = 0
+    if disguise:
+        _set_title(DISGUISE_TITLES[0])
+        console.print(f"[dim]伪装模式[/dim]")
 
     console.print(f"[dim]回测模式  {len(all_hist)}品种  每个品种{sum(len(v) for v in all_hist.values())}根 bar[/dim]")
     console.print(f"[dim]速度={speed}s/bar  Ctrl+C退出[/dim]\n")
 
     try:
         while any(idx[c] < len(all_hist[c]) for c in all_hist):
+            if disguise:
+                disguise_tick += 1
+                _cycle_title(disguise_tick)
             output_parts = []
 
             for code in codes:
@@ -328,7 +448,8 @@ async def run_replay(
 
                 output = _render_display(
                     window, code, aks_name, interval,
-                    chart_height, theme, None, signal, stealth=stealth,
+                    chart_height, theme, None, signal,
+                    stealth=stealth,
                 )
                 if not stealth:
                     bar_info = f"[dim]{bars[i].date} O={bars[i].open} C={bars[i].close} V={bars[i].volume:.0f}[/dim]"
